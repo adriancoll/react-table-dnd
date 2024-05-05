@@ -3,11 +3,11 @@
 // ui
 import { UserNav } from "./components/user-nav";
 
-import { DataTable } from "./components/data-table/data-table";
-import { columns } from "./components/rick-and-morty-table/columns";
+import { RickAndMortyDataTable } from "./components/rick-and-morty/data-table";
 
-import { fetchCharacters } from "./services/fetchCharacters";
 import { QueryClientProvider, QueryClient } from "@tanstack/react-query";
+import { columns } from "./components/rick-and-morty/columns";
+import { fetchCharacters } from "./services/fetchCharacters";
 
 const queryClient = new QueryClient();
 
@@ -29,10 +29,10 @@ export const App = () => {
               <UserNav />
             </div>
           </div>
-          <DataTable
+          <RickAndMortyDataTable
             columns={columns}
             queryKey={["rick-and-morty-characters"]}
-            fetchData={fetchCharacters}
+            tableResultsFn={fetchCharacters}
             tableId="rick-and-morty-characters-table"
           />
         </div>

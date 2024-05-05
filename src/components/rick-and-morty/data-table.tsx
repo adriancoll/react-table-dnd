@@ -5,7 +5,9 @@ import {
   ColumnFiltersState,
   ColumnOrderState,
   PaginationState,
+  RowSelectionState,
   SortingState,
+  TableState,
   Updater,
   VisibilityState,
   getCoreRowModel,
@@ -17,41 +19,29 @@ import {
   useReactTable,
 } from "@tanstack/react-table";
 
-import { AnimatePresence, motion } from "framer-motion";
-
 import { Table, TableBody, TableHeader, TableRow } from "@/components/ui/table";
 
-import { DataTableDragAlongCell } from "./data-table-drag-along-cell";
-import { DataTableDraggableColumnHead } from "./data-table-draggable-column-head";
-
 // drag and drop
-import {
-  DndContext,
-  KeyboardSensor,
-  MouseSensor,
-  TouchSensor,
-  closestCenter,
-  type DragEndEvent,
-  useSensor,
-  useSensors,
-} from "@dnd-kit/core";
+import { DndContext, closestCenter } from "@dnd-kit/core";
 import {
   restrictToFirstScrollableAncestor,
   restrictToHorizontalAxis,
 } from "@dnd-kit/modifiers";
 import {
-  arrayMove,
   horizontalListSortingStrategy,
   SortableContext,
 } from "@dnd-kit/sortable";
 import useDataTableStore from "@/stores/data-table.store";
 import { QueryKey, useQuery } from "@tanstack/react-query";
-import { Info } from "@/types/rick-and-morty-api";
+import { Character, Info } from "@/types/rick-and-morty-api";
+// table ui
 import { DataTablePagination } from "./data-table-pagination";
-import { ReloadIcon } from "@radix-ui/react-icons";
+import { DataTableDraggableColumnHead } from "../data-table/data-table-draggable-column-head";
+import { DataTableDragAlongCell } from "../data-table/data-table-drag-along-cell";
 import { DataTableToolbar } from "./data-table-toolbar";
-import { Skeleton } from "../ui/skeleton";
-import { cn } from "@/lib/utils";
+import { useTableDraggableHeader } from "../data-table/hooks/use-table-draggable-header";
+import { DataTableEmpty } from "../data-table/data-table-empty";
+import { DataTableSkeleton } from "../data-table/data-table-skeleton";
 
 export interface TableFetchParams {
   page: number;
@@ -61,7 +51,7 @@ export interface TableFetchParams {
 }
 
 interface WithStanstackQueryFetcher<TData> {
-  tableResultsFn: (p: TableFetchParams) => Promise<Info<TData>>;
+  tableResultsFn: (p: TableFetchParams) => Promise<Info<TData[]>>;
   queryKey: QueryKey;
 }
 
@@ -72,23 +62,32 @@ interface DataTableProps<TData, TValue> {
   queryKey: QueryKey;
 }
 
-export function DataTable<TData, TValue>({
+export function RickAndMortyDataTable({
   columns,
   tableId,
   tableResultsFn,
   queryKey,
-}: DataTableProps<TData, TValue> & WithStanstackQueryFetcher<TData>) {
+}: DataTableProps<Character, Character> &
+  WithStanstackQueryFetcher<Character>) {
   const {
     tables,
     setColumnOrder: setGlobalColumnOrder,
     setColumnVisibility: setGlobalColumnVisibility,
     setPagination: setGlobalPagination,
+    setRowSelection: setGlobalRowSelection,
+    setTableState: setGlobalTableState,
   } = useDataTableStore((state) => ({
     tables: state.tables,
     setColumnOrder: state.setColumnOrder,
     setColumnVisibility: state.setColumnVisibility,
     setPagination: state.setPagination,
+    setRowSelection: state.setRowSelection,
+    setTableState: state.setStableState,
   }));
+
+  const [tableState, setTableState] = React.useState(
+    tables[tableId]?.tableState || {}
+  );
 
   const [rowSelection, setRowSelection] = React.useState({});
   const [columnFilters, setColumnFilters] = React.useState<ColumnFiltersState>(
@@ -146,8 +145,32 @@ export function DataTable<TData, TValue>({
     });
   };
 
+  const updateTableRowSelection = (updater: Updater<RowSelectionState>) => {
+    setRowSelection((old) => {
+      const newRowSelectionValue =
+        updater instanceof Function ? updater(old) : updater;
+
+      // Update global state inside this callback to ensure consistency
+      setGlobalRowSelection(tableId, newRowSelectionValue);
+
+      return newRowSelectionValue;
+    });
+  };
+
+  const updateTableState = (updater: Updater<TableState>) => {
+    // reset pagination when sorting or filtering
+    table.setPageIndex(0);
+
+    setTableState((old) => {
+      const state = updater instanceof Function ? updater(old) : updater;
+      setGlobalTableState(tableId, state);
+
+      return state;
+    });
+  };
+
   const fetchDataOptions: TableFetchParams = {
-    page: pagination.pageIndex,
+    page: pagination.pageIndex + 1,
     pageSize: pagination.pageSize,
     columnFilters,
     sorting,
@@ -175,33 +198,33 @@ export function DataTable<TData, TValue>({
 
   const dataQueryRef = React.useRef(resultsQuery);
 
-  const { data: queryData, isLoading, isFetching } = resultsQuery;
-
-  const showLoadingQueryPanel = isFetching || isLoading;
+  const { data: queryData } = resultsQuery;
 
   const table = useReactTable({
-    data: (queryData?.rows as TData[]) ?? [],
+    data: queryData?.rows ?? [],
     columns,
+    autoResetPageIndex: false,
     manualPagination: true,
+    manualFiltering: true,
     pageCount: queryData?.pageCount ?? 1,
-    rowCount: queryData?.total || 0,
     meta: {
       tableId,
       dataQueryRef,
     },
     state: {
-      sorting,
-      columnVisibility,
-      rowSelection,
-      columnFilters,
+      ...tableState,
       columnOrder,
+      columnFilters,
+      columnVisibility,
       pagination,
+      rowSelection,
     },
     enableRowSelection: true,
+    onStateChange: updateTableState,
     onPaginationChange: updateTablePagination,
     onColumnOrderChange: updateColumnOrder,
     onColumnVisibilityChange: updateColumnVisibility,
-    onRowSelectionChange: setRowSelection,
+    onRowSelectionChange: updateTableRowSelection,
     onSortingChange: setSorting,
     onColumnFiltersChange: setColumnFilters,
     getCoreRowModel: getCoreRowModel(),
@@ -212,23 +235,14 @@ export function DataTable<TData, TValue>({
     getFacetedUniqueValues: getFacetedUniqueValues(),
   });
 
-  // reorder columns after drag & drop
-  function handleDragEnd(event: DragEndEvent) {
-    const { active, over } = event;
-    if (active && over && active.id !== over.id) {
-      const oldIndex = columnOrder.indexOf(active.id as string);
-      const newIndex = columnOrder.indexOf(over.id as string);
-      const newOrder = arrayMove<string>(columnOrder, oldIndex, newIndex); //this is just a splice util
+  React.useEffect(() => {
+    table.setPageIndex(0);
+  }, [table, columnFilters]);
 
-      updateColumnOrder(newOrder);
-    }
-  }
-
-  const sensors = useSensors(
-    useSensor(MouseSensor, {}),
-    useSensor(TouchSensor, {}),
-    useSensor(KeyboardSensor, {})
-  );
+  const { handleDragEnd, sensors } = useTableDraggableHeader({
+    onReorder: updateColumnOrder,
+    columnOrder,
+  });
 
   return (
     <DndContext
@@ -241,7 +255,7 @@ export function DataTable<TData, TValue>({
         <div className="h-4" />
         <DataTableToolbar table={table} />
         <div className="h-4" />
-        <div className="rounded-md border">
+        <div className="rounded-md border h-full">
           <Table>
             <TableHeader>
               {table.getHeaderGroups().map((headerGroup) => (
@@ -264,61 +278,23 @@ export function DataTable<TData, TValue>({
                 </TableRow>
               ))}
             </TableHeader>
-            <TableBody>
-              <AnimatePresence mode="wait">
-                {showLoadingQueryPanel && (
-                  <motion.div
-                    key="data-table-loading-panel"
-                    initial={{ opacity: 0 }}
-                    animate={{ opacity: 1 }}
-                    exit={{ opacity: 0 }}
-                    className="absolute inset-0 flex items-center bg-white/20 backdrop-blur-[3px] z-50 justify-center"
-                  >
-                    <div className="flex items-center justify-center">
-                      <ReloadIcon className="animate-spin h-5 w-5 text-primary mr-2" />
-                      <span>Loading</span>
-                    </div>
-                  </motion.div>
-                )}
-                {table.getRowModel().rows.map((row) => (
-                  <TableRow key={row.id}>
-                    {row.getVisibleCells().map((cell) => (
-                      <SortableContext
-                        key={cell.id}
-                        disabled={!cell.column.columnDef.meta?.draggable}
-                        items={columnOrder}
-                        strategy={horizontalListSortingStrategy}
-                      >
-                        <DataTableDragAlongCell key={cell.id} cell={cell} />
-                      </SortableContext>
-                    ))}
-                  </TableRow>
-                ))}
-                {isLoading &&
-                  Array.from({
-                    length: table.getState().pagination.pageSize,
-                  })
-                    .map((_, index) => index)
-                    .map(() => (
-                      <TableRow>
-                        {table.getAllColumns().map((column) => {
-                          return (
-                            <motion.tr
-                              key={column.id}
-                              initial={{ opacity: 0 }}
-                              animate={{ opacity: 1 }}
-                              exit={{ opacity: 0 }}
-                              className={cn(
-                                "p-2 align-middle [&:has([role=checkbox])]:pr-0 [&>[role=checkbox]]:translate-y-[2px]"
-                              )}
-                            >
-                              <Skeleton className="w-full h-6" />
-                            </motion.tr>
-                          );
-                        })}
-                      </TableRow>
-                    ))}
-              </AnimatePresence>
+            <TableBody className="relative">
+              {table.getRowModel().rows.map((row) => (
+                <TableRow key={row.id}>
+                  {row.getVisibleCells().map((cell) => (
+                    <SortableContext
+                      key={cell.id}
+                      disabled={!cell.column.columnDef.meta?.draggable}
+                      items={columnOrder}
+                      strategy={horizontalListSortingStrategy}
+                    >
+                      <DataTableDragAlongCell key={cell.id} cell={cell} />
+                    </SortableContext>
+                  ))}
+                </TableRow>
+              ))}
+              <DataTableEmpty table={table} />
+              <DataTableSkeleton table={table} />
             </TableBody>
           </Table>
         </div>
@@ -326,7 +302,7 @@ export function DataTable<TData, TValue>({
         <DataTablePagination table={table} />
         <div className="h-4" />
         <pre>
-          {/* <code>{JSON.stringify(table.getState(), null, 2)}</code> */}
+          <code>{JSON.stringify(table.getState(), null, 2)}</code>
         </pre>
       </div>
     </DndContext>
